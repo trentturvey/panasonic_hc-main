@@ -95,10 +95,6 @@ class PanasonicHCClimate(ClimateEntity):
             model=MODEL,
             connections={(CONNECTION_BLUETOOTH, thermostat.mac_address)},
         )
-        
-        # For HomeKit compatibility, ensure fan_modes is a list of strings
-        # This helps HomeKit properly recognize AUTO as a valid fan mode
-        self._explicit_fan_modes = list(self._attr_fan_modes)
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
