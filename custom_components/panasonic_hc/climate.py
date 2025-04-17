@@ -96,6 +96,12 @@ class PanasonicHCClimate(ClimateEntity):
             connections={(CONNECTION_BLUETOOTH, thermostat.mac_address)},
         )
 
+    @property
+    def supported_features(self) -> int:
+        """Return the list of supported features."""
+        # This explicitly returns an int which helps with HomeKit compatibility
+        return int(self._attr_supported_features)
+
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
 
