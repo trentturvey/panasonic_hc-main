@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
@@ -143,12 +144,46 @@ async def _async_run_thermostat(hass: HomeAssistant, entry: ConfigEntry) -> None
                 )
                 await _async_reconnect_thermostat(hass, entry)
                 continue
-
+                
             _LOGGER.error(
                 "[%s] Error updating PanasonicHC device: %s", 
                 thermostat.mac_address, 
                 str(e)
             )
+        except EOFError as e:
+            # Explicitly handle EOFError - this indicates the connection was closed unexpectedly
+            _LOGGER.error(
+                "[%s] Connection broken (EOFError), forcing reconnection: %s", 
+                thermostat.mac_address, 
+                str(e)
+            )
+            
+            async_dispatcher_send(
+                hass, f"{SIGNAL_THERMOSTAT_DISCONNECTED}_{thermostat.mac_address}"
+            )
+            await _async_reconnect_thermostat(hass, entry)
+            continue
+        # Catch any other unexpected error and force reconnection
+        except Exception as e:
+            _LOGGER.error(
+                "[%s] Unexpected error, forcing reconnection: %s", 
+                thermostat.mac_address, 
+                str(e)
+            )
+            
+            # Get error details to help with debugging
+            error_type, error_value, error_traceback = sys.exc_info()
+            _LOGGER.error(
+                "[%s] Error type: %s", 
+                thermostat.mac_address, 
+                error_type.__name__ if error_type else "Unknown"
+            )
+            
+            async_dispatcher_send(
+                hass, f"{SIGNAL_THERMOSTAT_DISCONNECTED}_{thermostat.mac_address}"
+            )
+            await _async_reconnect_thermostat(hass, entry)
+            continue
 
         # Use the configured update interval
         await asyncio.sleep(status_update_interval)
