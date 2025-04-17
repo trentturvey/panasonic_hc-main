@@ -19,6 +19,11 @@ PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR]
 
 type PanasonicHCConfigEntry = ConfigEntry[PanasonicHC]  # noqa: F821
 
+# Reconnection parameters
+RECONNECT_BASE_DELAY = 2  # Base delay in seconds
+RECONNECT_MAX_DELAY = 30  # Maximum delay between reconnection attempts
+RECONNECT_MAX_ATTEMPTS = 0  # 0 means unlimited attempts
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -74,11 +79,32 @@ async def _async_run_thermostat(hass: HomeAssistant, entry: ConfigEntry) -> None
 
     while True:
         try:
+            # Proactively check connection status before attempting operations
+            if not thermostat.is_connected or not thermostat.is_receiving_notifications:
+                if not thermostat.is_connected:
+                    _LOGGER.warning(
+                        "[%s] PanasonicHC device detected as disconnected, reconnecting",
+                        thermostat.mac_address
+                    )
+                else:
+                    _LOGGER.warning(
+                        "[%s] PanasonicHC device not receiving notifications, reconnecting",
+                        thermostat.mac_address
+                    )
+                
+                async_dispatcher_send(
+                    hass, f"{SIGNAL_THERMOSTAT_DISCONNECTED}_{thermostat.mac_address}"
+                )
+                await _async_reconnect_thermostat(hass, entry)
+                continue
+                
             await thermostat.async_get_status()
         except PanasonicHCException as e:
             if not thermostat.is_connected:
                 _LOGGER.error(
-                    "[%s] PanasonicHC device disconnected", thermostat.mac_address
+                    "[%s] PanasonicHC device disconnected: %s", 
+                    thermostat.mac_address, 
+                    str(e)
                 )
 
                 async_dispatcher_send(
@@ -88,28 +114,79 @@ async def _async_run_thermostat(hass: HomeAssistant, entry: ConfigEntry) -> None
                 continue
 
             _LOGGER.error(
-                "[%s] Error updating PanasonicHC device %s", thermostat.mac_address, e
+                "[%s] Error updating PanasonicHC device: %s", 
+                thermostat.mac_address, 
+                str(e)
             )
 
         await asyncio.sleep(10)
 
 
 async def _async_reconnect_thermostat(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reconnect thermostat."""
+    """Reconnect thermostat with exponential backoff."""
 
     thermostat = hass.data[DOMAIN][entry.entry_id]
-
-    while True:
-        try:
-            await thermostat.async_connect()
-        except PanasonicHCException:
-            await asyncio.sleep(10)
-            continue
-
-        _LOGGER.debug("[%s] PanasonicHC device connected", thermostat.mac_address)
-
-        async_dispatcher_send(
-            hass, f"{SIGNAL_THERMOSTAT_CONNECTED}_{thermostat.mac_address}"
+    attempt = 0
+    
+    # Make sure we're disconnected before trying to reconnect
+    try:
+        if thermostat.is_connected:
+            await thermostat.async_disconnect()
+            # Small delay to ensure complete disconnection
+            await asyncio.sleep(1)
+    except Exception as e:
+        _LOGGER.warning(
+            "[%s] Error during disconnect before reconnection: %s",
+            thermostat.mac_address,
+            str(e)
         )
 
-        return
+    while RECONNECT_MAX_ATTEMPTS == 0 or attempt < RECONNECT_MAX_ATTEMPTS:
+        attempt += 1
+        delay = min(RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), RECONNECT_MAX_DELAY)
+        
+        try:
+            _LOGGER.info(
+                "[%s] Attempting to reconnect (attempt %d)...",
+                thermostat.mac_address,
+                attempt
+            )
+            await thermostat.async_connect()
+            
+            _LOGGER.info(
+                "[%s] PanasonicHC device successfully reconnected",
+                thermostat.mac_address
+            )
+
+            async_dispatcher_send(
+                hass, f"{SIGNAL_THERMOSTAT_CONNECTED}_{thermostat.mac_address}"
+            )
+            return
+            
+        except PanasonicHCException as e:
+            _LOGGER.warning(
+                "[%s] Failed to reconnect (attempt %d): %s. Retrying in %d seconds...",
+                thermostat.mac_address,
+                attempt,
+                str(e),
+                delay
+            )
+            await asyncio.sleep(delay)
+            continue
+        
+        except Exception as e:
+            _LOGGER.error(
+                "[%s] Unexpected error during reconnection (attempt %d): %s. Retrying in %d seconds...",
+                thermostat.mac_address,
+                attempt,
+                str(e),
+                delay
+            )
+            await asyncio.sleep(delay)
+            continue
+    
+    _LOGGER.error(
+        "[%s] Failed to reconnect after %d attempts. Giving up.",
+        thermostat.mac_address,
+        attempt
+    )

@@ -30,8 +30,11 @@ MAX_TEMP = 32  # FIXME: check these
 BLE_CHAR_WRITE = "4d200002-eff3-4362-b090-a04cab3f1da0"
 BLE_CHAR_NOTIFY = "4d200003-eff3-4362-b090-a04cab3f1da0"
 CONSUMPTION_INTERVAL = 300
-TEMP_CHANGE_THRESHOLD = 10.0  # Maximum allowed temperature change in a short period
-TEMP_VALIDATION_WINDOW = 10.0  # Time window in seconds for temperature validation
+# Maximum time without notifications before considering the device disconnected (in seconds)
+MAX_NOTIFICATION_SILENCE = 20
+# Temperature validation parameters
+TEMP_CHANGE_THRESHOLD = 10.0
+TEMP_VALIDATION_WINDOW = 10.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,15 +82,27 @@ class PanasonicHC:
         self.curindex = None
         self.consumption = [0] * 48
         
-        # Temperature validation
-        self._last_valid_temp = None
+        # For temperature validation
+        self._last_temp = None
         self._last_temp_time = 0
+        
+        # For notification monitoring
+        self._last_notification_time = 0
 
     @property
     def is_connected(self) -> bool:
         """Return true if connected to thermostat."""
-
         return self._conn.is_connected
+
+    @property
+    def is_receiving_notifications(self) -> bool:
+        """Return true if device is sending notifications within expected timeframe."""
+        if self._last_notification_time == 0:
+            # No notifications received yet - might be initial connection
+            return True
+        
+        # Check if we've received a notification within the silence threshold
+        return (time.time() - self._last_notification_time) < MAX_NOTIFICATION_SILENCE
 
     def register_update_callback(self, on_update: Callable) -> None:
         """Register a callback to be called on updated data."""
@@ -106,6 +121,8 @@ class PanasonicHC:
         try:
             await self._conn.connect()
             await self._conn.start_notify(BLE_CHAR_NOTIFY, self.on_notification)
+            # Reset notification timestamp on new connection
+            self._last_notification_time = time.time()
             await self.async_get_status()
         except (BleakError, TimeoutError) as e:
             raise PanasonicHCException("Could not connect to Thermostat") from e
@@ -120,6 +137,16 @@ class PanasonicHC:
 
     async def async_get_status(self) -> None:
         """Query current status."""
+
+        # Check if we're still receiving notifications
+        if not self.is_receiving_notifications and self.is_connected:
+            _LOGGER.warning(
+                "[%s] No notifications received for %s seconds, treating as disconnected",
+                self.mac_address,
+                MAX_NOTIFICATION_SILENCE
+            )
+            # Simulate a disconnection by raising an exception
+            raise PanasonicHCException("No recent notifications")
 
         # always update status
         await self._async_write_command(PanasonicBLEStatusReq())
@@ -147,32 +174,11 @@ class PanasonicHC:
             except (BleakError, TimeoutError) as e:
                 raise PanasonicHCException("Error during write") from e
 
-    def _validate_temperature(self, temperature: float) -> float:
-        """Validate temperature readings to filter out anomalous values."""
-        now = time.time()
-        
-        # If this is the first reading, accept it
-        if self._last_valid_temp is None:
-            self._last_valid_temp = temperature
-            self._last_temp_time = now
-            return temperature
-        
-        # Check if temperature change exceeds threshold within validation window
-        time_diff = now - self._last_temp_time
-        if time_diff <= TEMP_VALIDATION_WINDOW and abs(temperature - self._last_valid_temp) > TEMP_CHANGE_THRESHOLD:
-            _LOGGER.warning(
-                "[%s] Anomalous temperature reading detected: %s°C (previous: %s°C). Ignoring value.",
-                self.mac_address, temperature, self._last_valid_temp
-            )
-            return self._last_valid_temp
-        
-        # Update last valid temperature and timestamp
-        self._last_valid_temp = temperature
-        self._last_temp_time = now
-        return temperature
-
     def on_notification(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
         """Handle data from BLE GATT Notifications."""
+
+        # Update notification timestamp whenever we receive any notification
+        self._last_notification_time = time.time()
 
         try:
             do_callback = False
@@ -180,14 +186,31 @@ class PanasonicHC:
             _LOGGER.debug("Received packet data: %s", parcel)
             for packet in parcel:
                 if isinstance(packet, PanasonicBLEParcel.PanasonicBLEPacketStatus):
-                    # Validate current temperature reading
-                    validated_curtemp = self._validate_temperature(packet.curtemp)
+                    # Simple anomalous temperature detection
+                    curtemp = packet.curtemp
+                    now = time.time()
+                    
+                    # If we have a previous temperature reading
+                    if self._last_temp is not None:
+                        # Check if the change is more than threshold in less than window seconds
+                        if (now - self._last_temp_time < TEMP_VALIDATION_WINDOW and 
+                            abs(curtemp - self._last_temp) > TEMP_CHANGE_THRESHOLD):
+                            _LOGGER.warning(
+                                "[%s] Anomalous temperature reading detected: %s°C (previous: %s°C). Ignoring value.",
+                                self.mac_address, curtemp, self._last_temp
+                            )
+                            # Use previous temperature instead
+                            curtemp = self._last_temp
+                    
+                    # Update our temperature tracking
+                    self._last_temp = curtemp
+                    self._last_temp_time = now
                     
                     self.status = Status(
                         packet.power,
                         packet.mode.name,
                         packet.powersave,
-                        validated_curtemp,
+                        curtemp,
                         packet.temp,
                         packet.fanspeed.name,
                     )
