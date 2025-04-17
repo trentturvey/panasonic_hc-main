@@ -91,8 +91,22 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
 
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        thermostat: PanasonicHC = hass.data[DOMAIN].pop(entry.entry_id)
-        await thermostat.async_disconnect()
+        try:
+            thermostat: PanasonicHC = hass.data[DOMAIN].pop(entry.entry_id)
+            try:
+                await thermostat.async_disconnect()
+            except Exception as e:
+                _LOGGER.warning(
+                    "[%s] Error during disconnect, continuing with unload: %s",
+                    entry.unique_id or "unknown",
+                    str(e)
+                )
+        except (KeyError, AttributeError) as e:
+            _LOGGER.warning(
+                "[%s] Error accessing thermostat during unload: %s",
+                entry.unique_id or "unknown",
+                str(e)
+            )
 
     return unload_ok
 
