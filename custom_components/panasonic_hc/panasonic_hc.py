@@ -29,12 +29,6 @@ MAX_TEMP = 32  # FIXME: check these
 
 BLE_CHAR_WRITE = "4d200002-eff3-4362-b090-a04cab3f1da0"
 BLE_CHAR_NOTIFY = "4d200003-eff3-4362-b090-a04cab3f1da0"
-CONSUMPTION_INTERVAL = 300
-# Maximum time without notifications before considering the device disconnected (in seconds)
-MAX_NOTIFICATION_SILENCE = 20
-# Temperature validation parameters
-TEMP_CHANGE_THRESHOLD = 10.0
-TEMP_VALIDATION_WINDOW = 10.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,7 +62,16 @@ class Status:
 class PanasonicHC:
     """Class representing the Panasonic Controller."""
 
-    def __init__(self, ble_device: BLEDevice, mac_address: str) -> None:
+    def __init__(
+        self, 
+        ble_device: BLEDevice, 
+        mac_address: str,
+        notification_timeout: int = 20,
+        consumption_interval: int = 300,
+        temp_change_threshold: float = 10.0,
+        temp_validation_window: float = 10.0,
+        temp_validation_enabled: bool = True
+    ) -> None:
         """Initialise Panasonic H&C Controller."""
 
         self.last_update = 0
@@ -81,6 +84,13 @@ class PanasonicHC:
         self.curhour = None
         self.curindex = None
         self.consumption = [0] * 48
+        
+        # Configurable options
+        self._notification_timeout = notification_timeout
+        self._consumption_interval = consumption_interval
+        self._temp_change_threshold = temp_change_threshold
+        self._temp_validation_window = temp_validation_window
+        self._temp_validation_enabled = temp_validation_enabled
         
         # For temperature validation
         self._last_temp = None
@@ -102,7 +112,7 @@ class PanasonicHC:
             return True
         
         # Check if we've received a notification within the silence threshold
-        return (time.time() - self._last_notification_time) < MAX_NOTIFICATION_SILENCE
+        return (time.time() - self._last_notification_time) < self._notification_timeout
 
     def register_update_callback(self, on_update: Callable) -> None:
         """Register a callback to be called on updated data."""
@@ -143,7 +153,7 @@ class PanasonicHC:
             _LOGGER.warning(
                 "[%s] No notifications received for %s seconds, treating as disconnected",
                 self.mac_address,
-                MAX_NOTIFICATION_SILENCE
+                self._notification_timeout
             )
             # Simulate a disconnection by raising an exception
             raise PanasonicHCException("No recent notifications")
@@ -153,7 +163,7 @@ class PanasonicHC:
 
         # update consumption if interval has passed
         now = time.time()
-        if now > self.last_update + CONSUMPTION_INTERVAL:
+        if now > self.last_update + self._consumption_interval:
             await asyncio.sleep(0.5)
             await self._async_write_command(PanasonicBLEPowerReq())
             await asyncio.sleep(0.5)
@@ -186,15 +196,15 @@ class PanasonicHC:
             _LOGGER.debug("Received packet data: %s", parcel)
             for packet in parcel:
                 if isinstance(packet, PanasonicBLEParcel.PanasonicBLEPacketStatus):
-                    # Simple anomalous temperature detection
+                    # Handle temperature with validation if enabled
                     curtemp = packet.curtemp
                     now = time.time()
                     
-                    # If we have a previous temperature reading
-                    if self._last_temp is not None:
+                    # Validate temperature if enabled
+                    if self._temp_validation_enabled and self._last_temp is not None:
                         # Check if the change is more than threshold in less than window seconds
-                        if (now - self._last_temp_time < TEMP_VALIDATION_WINDOW and 
-                            abs(curtemp - self._last_temp) > TEMP_CHANGE_THRESHOLD):
+                        if (now - self._last_temp_time < self._temp_validation_window and 
+                            abs(curtemp - self._last_temp) > self._temp_change_threshold):
                             _LOGGER.warning(
                                 "[%s] Anomalous temperature reading detected: %s°C (previous: %s°C). Ignoring value.",
                                 self.mac_address, curtemp, self._last_temp

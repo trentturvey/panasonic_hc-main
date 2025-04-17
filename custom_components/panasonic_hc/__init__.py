@@ -12,16 +12,28 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
-from .const import DOMAIN, SIGNAL_THERMOSTAT_CONNECTED, SIGNAL_THERMOSTAT_DISCONNECTED
+from .const import (
+    CONF_CONSUMPTION_UPDATE_INTERVAL,
+    CONF_NOTIFICATION_TIMEOUT,
+    CONF_RECONNECT_BASE_DELAY,
+    CONF_RECONNECT_MAX_DELAY,
+    CONF_STATUS_UPDATE_INTERVAL,
+    DEFAULT_CONSUMPTION_UPDATE_INTERVAL,
+    DEFAULT_NOTIFICATION_TIMEOUT,
+    DEFAULT_RECONNECT_BASE_DELAY,
+    DEFAULT_RECONNECT_MAX_DELAY,
+    DEFAULT_STATUS_UPDATE_INTERVAL,
+    DOMAIN,
+    SIGNAL_THERMOSTAT_CONNECTED,
+    SIGNAL_THERMOSTAT_DISCONNECTED,
+)
 from .panasonic_hc import PanasonicHC, PanasonicHCException
 
 PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR]
 
 type PanasonicHCConfigEntry = ConfigEntry[PanasonicHC]  # noqa: F821
 
-# Reconnection parameters
-RECONNECT_BASE_DELAY = 2  # Base delay in seconds
-RECONNECT_MAX_DELAY = 30  # Maximum delay between reconnection attempts
+# Default reconnection parameters - these will be overridden by config entry options
 RECONNECT_MAX_ATTEMPTS = 0  # 0 means unlimited attempts
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,7 +51,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if device is None:
         raise ConfigEntryNotReady(f"[{mac_address}] Device could not be found")
 
-    thermostat = PanasonicHC(ble_device=device, mac_address=mac_address)
+    # Get configuration options
+    options = entry.options
+    notification_timeout = options.get(
+        CONF_NOTIFICATION_TIMEOUT, DEFAULT_NOTIFICATION_TIMEOUT
+    )
+    consumption_interval = options.get(
+        CONF_CONSUMPTION_UPDATE_INTERVAL, DEFAULT_CONSUMPTION_UPDATE_INTERVAL
+    )
+
+    thermostat = PanasonicHC(
+        ble_device=device,
+        mac_address=mac_address,
+        notification_timeout=notification_timeout,
+        consumption_interval=consumption_interval,
+    )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = thermostat
 
@@ -74,6 +100,11 @@ async def _async_run_thermostat(hass: HomeAssistant, entry: ConfigEntry) -> None
     """Run the thermostat."""
 
     thermostat = hass.data[DOMAIN][entry.entry_id]
+    # Get configuration option for status update interval
+    options = entry.options
+    status_update_interval = options.get(
+        CONF_STATUS_UPDATE_INTERVAL, DEFAULT_STATUS_UPDATE_INTERVAL
+    )
 
     await _async_reconnect_thermostat(hass, entry)
 
@@ -119,7 +150,8 @@ async def _async_run_thermostat(hass: HomeAssistant, entry: ConfigEntry) -> None
                 str(e)
             )
 
-        await asyncio.sleep(10)
+        # Use the configured update interval
+        await asyncio.sleep(status_update_interval)
 
 
 async def _async_reconnect_thermostat(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -127,6 +159,15 @@ async def _async_reconnect_thermostat(hass: HomeAssistant, entry: ConfigEntry) -
 
     thermostat = hass.data[DOMAIN][entry.entry_id]
     attempt = 0
+    
+    # Get reconnection parameters from configuration options
+    options = entry.options
+    reconnect_base_delay = options.get(
+        CONF_RECONNECT_BASE_DELAY, DEFAULT_RECONNECT_BASE_DELAY
+    )
+    reconnect_max_delay = options.get(
+        CONF_RECONNECT_MAX_DELAY, DEFAULT_RECONNECT_MAX_DELAY
+    )
     
     # Make sure we're disconnected before trying to reconnect
     try:
@@ -143,7 +184,7 @@ async def _async_reconnect_thermostat(hass: HomeAssistant, entry: ConfigEntry) -
 
     while RECONNECT_MAX_ATTEMPTS == 0 or attempt < RECONNECT_MAX_ATTEMPTS:
         attempt += 1
-        delay = min(RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), RECONNECT_MAX_DELAY)
+        delay = min(reconnect_base_delay * (2 ** (attempt - 1)), reconnect_max_delay)
         
         try:
             _LOGGER.info(

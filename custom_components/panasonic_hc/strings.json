@@ -18,5 +18,42 @@
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "connection_settings": "Connection Settings",
+          "temperature_settings": "Temperature Validation",
+          "polling_settings": "Polling Settings"
+        }
+      },
+      "connection_settings": {
+        "title": "Connection Settings",
+        "description": "Configure how the integration manages Bluetooth connections",
+        "data": {
+          "reconnect_base_delay": "Initial delay (seconds) between reconnection attempts",
+          "reconnect_max_delay": "Maximum delay (seconds) between reconnection attempts",
+          "notification_timeout": "Time (seconds) without notifications before considering the device disconnected"
+        }
+      },
+      "temperature_settings": {
+        "title": "Temperature Validation",
+        "description": "Configure how the integration filters out anomalous temperature readings",
+        "data": {
+          "temp_validation_enabled": "Enable validation to filter out anomalous temperature readings",
+          "temp_change_threshold": "Temperature change (°C) threshold to consider as anomalous",
+          "temp_validation_window": "Time window (seconds) to check for anomalous temperature changes"
+        }
+      },
+      "polling_settings": {
+        "title": "Polling Settings",
+        "description": "Configure how often the integration polls the device for updates",
+        "data": {
+          "status_update_interval": "How often (seconds) to request status updates from the device",
+          "consumption_update_interval": "How often (seconds) to request energy consumption data"
+        }
+      }
+    }
   }
 }
